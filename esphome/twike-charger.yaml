@@ -1,0 +1,519 @@
+# Twike charger controller
+# Waveshare ESP32-S3-POE-ETH-8DI-8DO (ESP32-S3-WROOM-1U-N16R8)
+# https://www.waveshare.com/wiki/ESP32-S3-POE-ETH-8DI-8DO
+#
+# Outbound-only: Ethernet (DHCP) -> MQTT over TLS (EMQX Cloud). No native API.
+# All safety logic lives here, so it keeps working without the cloud.
+#
+# IO mapping (verified with the PlatformIO IO check, except Ethernet):
+#   DI1 = GPIO4, active low, needs pull-up       -> Twike plugged in
+#   DO1..DO3 = TCA9554 @0x20 pins 0..2, active low
+#     DO1 = charger stage 1, DO2 = charger stage 2, DO3 = heating
+#
+# Energy: polls a Shelly Pro EM-50 over local HTTP and publishes live power,
+# current, today's energy and these retained messages:
+#   twike-charger/energy/day/YYYY-MM-DD = Wh (one per finished day)
+#   twike-charger/energy/current_history = 5 min average current, last 24 h (JSON)
+
+substitutions:
+  name: twike-charger
+  friendly_name: Twike Charger
+  # Hard caps that apply even if the phone/cloud never sends OFF
+  max_charge_time: 10h
+  max_heating_time: 2h
+  # Ignore switch commands this long after (re)connecting to MQTT, so a
+  # stale retained ON on a command topic can't start charging after a reboot
+  command_arm_delay: 5s
+  # Shelly Pro EM-50 on the LAN (reserve this IP in the router)
+  shelly_host: 192.168.1.161
+  # Measuring channel the phase is on (0 or 1)
+  shelly_channel: "0"
+  shelly_poll_interval: 30s
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  min_version: 2025.5.0
+  # 5 min average current for the last 24 h (RAM; restored from MQTT on boot)
+  includes:
+    - sample_history.h
+
+esp32:
+  board: esp32-s3-devkitc-1
+  flash_size: 16MB
+  framework:
+    type: esp-idf
+
+psram:
+  mode: octal
+  speed: 80MHz
+
+# Native USB-C port (USB Serial/JTAG)
+logger:
+  hardware_uart: USB_SERIAL_JTAG
+
+# W5500 over SPI, IP via DHCP. Pins from the Waveshare demo code, not yet
+# confirmed on hardware: if the link never comes up, check these against the
+# schematic.
+ethernet:
+  type: W5500
+  clk_pin: GPIO15
+  mosi_pin: GPIO13
+  miso_pin: GPIO14
+  cs_pin: GPIO16
+  interrupt_pin: GPIO12
+  reset_pin: GPIO39
+  clock_speed: 20MHz
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+mqtt:
+  id: mqtt_client
+  broker: !secret mqtt_broker
+  port: 8883
+  username: !secret mqtt_username
+  password: !secret mqtt_password
+  client_id: ${name}
+  topic_prefix: twike-charger
+  discovery: true
+  # Availability: twike-charger/status = online/offline (retained)
+  birth_message:
+    topic: twike-charger/status
+    payload: online
+    retain: true
+  will_message:
+    topic: twike-charger/status
+    payload: offline
+    retain: true
+  shutdown_message:
+    topic: twike-charger/status
+    payload: offline
+    retain: true
+  # DigiCert Global Root G2 (EMQX Cloud Serverless)
+  # SHA256 CB:3C:CB:B7:60:31:E5:E0:13:8F:8D:D3:9A:23:F9:DE:47:FF:C3:5E:43:C1:14:4C:EA:27:D4:6A:5A:B1:CB:5F
+  # Valid until 2038-01-15
+  certificate_authority: |
+    -----BEGIN CERTIFICATE-----
+    MIIDjjCCAnagAwIBAgIQAzrx5qcRqaC7KGSxHQn65TANBgkqhkiG9w0BAQsFADBh
+    MQswCQYDVQQGEwJVUzEVMBMGA1UEChMMRGlnaUNlcnQgSW5jMRkwFwYDVQQLExB3
+    d3cuZGlnaWNlcnQuY29tMSAwHgYDVQQDExdEaWdpQ2VydCBHbG9iYWwgUm9vdCBH
+    MjAeFw0xMzA4MDExMjAwMDBaFw0zODAxMTUxMjAwMDBaMGExCzAJBgNVBAYTAlVT
+    MRUwEwYDVQQKEwxEaWdpQ2VydCBJbmMxGTAXBgNVBAsTEHd3dy5kaWdpY2VydC5j
+    b20xIDAeBgNVBAMTF0RpZ2lDZXJ0IEdsb2JhbCBSb290IEcyMIIBIjANBgkqhkiG
+    9w0BAQEFAAOCAQ8AMIIBCgKCAQEAuzfNNNx7a8myaJCtSnX/RrohCgiN9RlUyfuI
+    2/Ou8jqJkTx65qsGGmvPrC3oXgkkRLpimn7Wo6h+4FR1IAWsULecYxpsMNzaHxmx
+    1x7e/dfgy5SDN67sH0NO3Xss0r0upS/kqbitOtSZpLYl6ZtrAGCSYP9PIUkY92eQ
+    q2EGnI/yuum06ZIya7XzV+hdG82MHauVBJVJ8zUtluNJbd134/tJS7SsVQepj5Wz
+    tCO7TG1F8PapspUwtP1MVYwnSlcUfIKdzXOS0xZKBgyMUNGPHgm+F6HmIcr9g+UQ
+    vIOlCsRnKPZzFBQ9RnbDhxSJITRNrw9FDKZJobq7nMWxM4MphQIDAQABo0IwQDAP
+    BgNVHRMBAf8EBTADAQH/MA4GA1UdDwEB/wQEAwIBhjAdBgNVHQ4EFgQUTiJUIBiV
+    5uNu5g/6+rkS7QYXjzkwDQYJKoZIhvcNAQELBQADggEBAGBnKJRvDkhj6zHd6mcY
+    1Yl9PMWLSn/pvtsrF9+wX3N3KjITOYFnQoQj8kVnNeyIv/iPsGEMNKSuIEyExtv4
+    NeF22d+mQrvHRAiGfzZ0JFrabA0UWTW98kndth/Jsw1HKj2ZL7tcu7XUIOGZX1NG
+    Fdtom/DzMNU+MeKNhJ7jitralj41E6Vf8PlwUHBHQRFXGU7Aj64GxJUTFy8bJZ91
+    8rGOmaFvE7FBcf6IKshPECBV1/MUReXgRPTqh5Uykw7+U0b6LJ3/iyK5S9kJRaTe
+    pLiaWN0bfVKfjllDiIGknibVb63dDcY3fe0Dkhvld1927jyNxF1WW6LZZm6zNTfl
+    MrY=
+    -----END CERTIFICATE-----
+  on_connect:
+    - globals.set:
+        id: commands_armed
+        value: "false"
+    # Re-send the last finished day in case it rolled over while offline
+    - script.execute: publish_last_day
+    - script.execute: publish_current_history
+    # Clear any retained commands so they can't fire again on a later reconnect
+    - mqtt.publish:
+        topic: twike-charger/switch/charging/command
+        payload: ""
+        retain: true
+    - mqtt.publish:
+        topic: twike-charger/switch/heating/command
+        payload: ""
+        retain: true
+    - delay: ${command_arm_delay}
+    - globals.set:
+        id: commands_armed
+        value: "true"
+  on_disconnect:
+    - globals.set:
+        id: commands_armed
+        value: "false"
+  # After a reboot, pick up the 24 h current history from the retained message
+  on_message:
+    - topic: twike-charger/energy/current_history
+      then:
+        - lambda: |-
+            if (!current_history().empty()) return;
+            int64_t end_ts = 0;
+            std::vector<float> values;
+            json::parse_json(x, [&](JsonObject root) -> bool {
+              end_ts = root["end"] | (int64_t) 0;
+              JsonArray arr = root["v"];
+              for (JsonVariant v : arr) {
+                values.push_back(v.isNull() ? NAN : v.as<float>());
+              }
+              return true;
+            });
+            if (end_ts > 0 && !values.empty()) {
+              current_history().restore(end_ts, values);
+              ESP_LOGI("energy", "Restored %u current history slots", (unsigned) values.size());
+            }
+
+globals:
+  - id: commands_armed
+    type: bool
+    restore_value: false
+    initial_value: "false"
+
+  # Shelly energy counter at the start of the current day (survives reboots)
+  - id: day_start_date
+    type: int
+    restore_value: true
+    initial_value: "0"
+  - id: day_start_wh
+    type: float
+    restore_value: true
+    initial_value: "0"
+  # Last finished day, kept until it has been published
+  - id: last_day_date
+    type: int
+    restore_value: true
+    initial_value: "0"
+  - id: last_day_wh
+    type: float
+    restore_value: true
+    initial_value: "0"
+
+time:
+  - platform: sntp
+    id: sntp_time
+    timezone: Europe/Zurich
+
+# Blocking on esp-idf: keep the timeout short so an unreachable Shelly
+# can't delay the safety logic for long
+http_request:
+  verify_ssl: false
+  timeout: 2s
+
+i2c:
+  sda: GPIO42
+  scl: GPIO41
+  frequency: 400kHz
+
+pca9554:
+  - id: exio
+    address: 0x20
+
+binary_sensor:
+  - platform: gpio
+    id: twike_plugged_in
+    name: "Twike plugged in"
+    pin:
+      number: GPIO4
+      mode:
+        input: true
+        pullup: true
+      inverted: true
+    filters:
+      - delayed_on_off: 500ms
+    on_release:
+      - logger.log: "Twike unplugged: stopping charging and heating"
+      - script.execute: stop_charging
+      - switch.turn_off: heat_relay
+
+switch:
+  # --- Raw outputs: internal only, so MQTT can't bypass the logic below ---
+  # Active low at the expander -> inverted. Without it ALWAYS_OFF would
+  # switch the outputs ON at boot.
+  - platform: gpio
+    id: charge_relay_1
+    internal: true
+    restore_mode: ALWAYS_OFF
+    pin:
+      pca9554: exio
+      number: 0
+      mode:
+        output: true
+      inverted: true
+
+  - platform: gpio
+    id: charge_relay_2
+    internal: true
+    restore_mode: ALWAYS_OFF
+    pin:
+      pca9554: exio
+      number: 1
+      mode:
+        output: true
+      inverted: true
+    on_turn_on:
+      - script.execute: charge_watchdog
+    on_turn_off:
+      - script.stop: charge_watchdog
+
+  - platform: gpio
+    id: heat_relay
+    internal: true
+    restore_mode: ALWAYS_OFF
+    pin:
+      pca9554: exio
+      number: 2
+      mode:
+        output: true
+      inverted: true
+    on_turn_on:
+      - script.execute: heating_watchdog
+    on_turn_off:
+      - script.stop: heating_watchdog
+
+  # --- User-facing switches (MQTT) ---
+  # ON while the charger path is energized (stage 1 on), incl. starting.
+  - platform: template
+    id: charging
+    name: "Charging"
+    lambda: return id(charge_relay_1).state;
+    turn_on_action:
+      - if:
+          condition:
+            lambda: return !id(commands_armed);
+          then:
+            - logger.log: "Ignoring Charging ON: commands not armed yet"
+          else:
+            - if:
+                condition:
+                  binary_sensor.is_on: twike_plugged_in
+                then:
+                  - script.stop: stop_charging
+                  - script.execute: start_charging
+                else:
+                  - logger.log: "Refusing to start charging: Twike not plugged in"
+    turn_off_action:
+      - script.execute: stop_charging
+
+  - platform: template
+    id: heating
+    name: "Heating"
+    lambda: return id(heat_relay).state;
+    turn_on_action:
+      - if:
+          condition:
+            lambda: return !id(commands_armed);
+          then:
+            - logger.log: "Ignoring Heating ON: commands not armed yet"
+          else:
+            - if:
+                condition:
+                  binary_sensor.is_on: twike_plugged_in
+                then:
+                  - switch.turn_on: heat_relay
+                else:
+                  - logger.log: "Refusing to heat: Twike not plugged in"
+    turn_off_action:
+      - switch.turn_off: heat_relay
+
+script:
+  # Stage 1 on, wait, re-check plug, then stage 2. Unplugging during the wait
+  # triggers stop_charging, which cancels this script.
+  - id: start_charging
+    mode: single
+    then:
+      - switch.turn_on: charge_relay_1
+      - delay: 5s
+      - if:
+          condition:
+            binary_sensor.is_on: twike_plugged_in
+          then:
+            - switch.turn_on: charge_relay_2
+          else:
+            - logger.log: "Twike no longer plugged in: aborting start"
+            - switch.turn_off: charge_relay_1
+
+  - id: stop_charging
+    mode: single
+    then:
+      - script.stop: start_charging
+      - switch.turn_off: charge_relay_2
+      - delay: 2s
+      - switch.turn_off: charge_relay_1
+
+  # Restarted whenever stage 2 turns on, stopped when it turns off
+  - id: charge_watchdog
+    mode: restart
+    then:
+      - delay: ${max_charge_time}
+      - logger.log:
+          level: WARN
+          format: "Max charge time reached: stopping"
+      - script.execute: stop_charging
+
+  - id: heating_watchdog
+    mode: restart
+    then:
+      - delay: ${max_heating_time}
+      - logger.log:
+          level: WARN
+          format: "Max heating time reached: heating off"
+      - switch.turn_off: heat_relay
+
+  - id: publish_last_day
+    mode: queued
+    then:
+      - lambda: |-
+          int d = id(last_day_date);
+          if (d == 0 || !id(mqtt_client).is_connected()) return;
+          char topic[64];
+          snprintf(topic, sizeof(topic), "twike-charger/energy/day/%04d-%02d-%02d",
+                   d / 10000, d / 100 % 100, d % 100);
+          char payload[16];
+          snprintf(payload, sizeof(payload), "%.0f", id(last_day_wh));
+          id(mqtt_client).publish(std::string(topic), std::string(payload), 1, true);
+
+  - id: publish_current_history
+    mode: queued
+    then:
+      - lambda: |-
+          if (current_history().empty() || !id(mqtt_client).is_connected()) return;
+          id(mqtt_client).publish(std::string("twike-charger/energy/current_history"),
+                                  current_history().to_json(), 0, true);
+
+text_sensor:
+  - platform: template
+    id: charger_state
+    name: "Charger state"
+    update_interval: never
+
+  - platform: ethernet_info
+    ip_address:
+      name: "IP address"
+      entity_category: diagnostic
+
+sensor:
+  - platform: template
+    id: shelly_power
+    name: "Power"
+    unit_of_measurement: W
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 0
+    update_interval: never
+
+  - platform: template
+    id: shelly_current
+    name: "Current"
+    unit_of_measurement: A
+    device_class: current
+    state_class: measurement
+    accuracy_decimals: 2
+    update_interval: never
+
+  - platform: template
+    id: energy_today
+    name: "Energy today"
+    unit_of_measurement: Wh
+    device_class: energy
+    state_class: total_increasing
+    accuracy_decimals: 0
+    update_interval: never
+
+  # Shelly's lifetime counter (persists on the Shelly across reboots)
+  - platform: template
+    id: energy_total
+    name: "Energy total"
+    unit_of_measurement: Wh
+    device_class: energy
+    state_class: total_increasing
+    accuracy_decimals: 0
+    update_interval: never
+
+  - platform: uptime
+    name: "Uptime"
+    update_interval: 60s
+    entity_category: diagnostic
+
+interval:
+  - interval: ${shelly_poll_interval}
+    startup_delay: 15s
+    then:
+      - http_request.get:
+          url: http://${shelly_host}/rpc/Shelly.GetStatus
+          capture_response: true
+          max_response_buffer_size: 8192
+          on_response:
+            then:
+              - lambda: |-
+                  if (response->status_code != 200) {
+                    ESP_LOGW("energy", "Shelly HTTP %d", response->status_code);
+                    id(shelly_power).publish_state(NAN);
+                    id(shelly_current).publish_state(NAN);
+                    return;
+                  }
+                  float power = NAN, current = NAN, total = NAN;
+                  json::parse_json(body, [&](JsonObject root) -> bool {
+                    JsonObject em = root["em1:${shelly_channel}"];
+                    JsonObject data = root["em1data:${shelly_channel}"];
+                    if (em.isNull() || data.isNull()) return false;
+                    power = em["act_power"] | NAN;
+                    current = em["current"] | NAN;
+                    total = data["total_act_energy"] | NAN;
+                    return true;
+                  });
+                  if (std::isnan(total)) {
+                    ESP_LOGW("energy", "Unexpected Shelly response");
+                    id(shelly_power).publish_state(NAN);
+                    id(shelly_current).publish_state(NAN);
+                    return;
+                  }
+                  id(shelly_power).publish_state(power);
+                  id(shelly_current).publish_state(current);
+                  id(energy_total).publish_state(total);
+
+                  auto now = id(sntp_time).now();
+                  if (!now.is_valid()) return;
+                  if (current_history().add(now.timestamp, current)) {
+                    id(publish_current_history).execute();
+                  }
+                  int today = now.year * 10000 + now.month * 100 + now.day_of_month;
+
+                  if (id(day_start_date) == 0 || total < id(day_start_wh)) {
+                    // First run, or the Shelly counters were reset: start counting now
+                    id(day_start_date) = today;
+                    id(day_start_wh) = total;
+                  } else if (today != id(day_start_date)) {
+                    // New day: close the previous one. If the ESP was offline for
+                    // several days, they all end up on the first of them.
+                    id(last_day_date) = id(day_start_date);
+                    id(last_day_wh) = total - id(day_start_wh);
+                    id(day_start_date) = today;
+                    id(day_start_wh) = total;
+                    id(publish_last_day).execute();
+                  }
+                  id(energy_today).publish_state(total - id(day_start_wh));
+          on_error:
+            then:
+              - logger.log:
+                  level: WARN
+                  format: "Shelly not reachable at ${shelly_host}"
+              - lambda: |-
+                  id(shelly_power).publish_state(NAN);
+                  id(shelly_current).publish_state(NAN);
+
+  # Publish the charger state only when it changes
+  - interval: 250ms
+    then:
+      - lambda: |-
+          std::string s;
+          if (id(start_charging).is_running() || id(stop_charging).is_running()) {
+            s = "Starting / stopping";
+          } else if (id(charge_relay_2).state) {
+            s = "Charging";
+          } else if (!id(twike_plugged_in).state) {
+            s = "Not plugged in";
+          } else {
+            s = "Idle";
+          }
+          if (!id(charger_state).has_state() || id(charger_state).state != s) {
+            id(charger_state).publish_state(s);
+          }

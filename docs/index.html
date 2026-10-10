@@ -1,0 +1,856 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#f4f5f7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#111317" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Twike">
+<title>Twike Charger</title>
+<!--
+  Static control page for the Twike charger (ESPHome, see ../esphome).
+  Talks MQTT over secure WebSockets directly to EMQX Cloud; no server needed.
+  Open it from disk or host it anywhere (e.g. GitHub Pages).
+-->
+<script src="https://cdn.jsdelivr.net/npm/mqtt@5.16.0/dist/mqtt.min.js"
+        integrity="sha384-9WWboT9UtuPFRlOLq4FygQkcJxzYcpz8SXGkNyCEXM+44n14xzjNlrRKYZwuF/A6"
+        crossorigin="anonymous"></script>
+<style>
+  :root {
+    --bg: #f4f5f7;
+    --card: #ffffff;
+    --text: #16181d;
+    --muted: #6b7280;
+    --line: #e3e5e9;
+    --accent: #1f7a4d;
+    --accent-soft: #e3f3ea;
+    --warn: #b45309;
+    --warn-soft: #fdf0dc;
+    --bad: #b42318;
+    --bad-soft: #fde7e5;
+    --off: #c4c8cf;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111317;
+      --card: #1b1e24;
+      --text: #eceef2;
+      --muted: #9aa1ad;
+      --line: #2b2f37;
+      --accent: #4cc38a;
+      --accent-soft: #173226;
+      --warn: #f0a443;
+      --warn-soft: #3a2a14;
+      --bad: #f2786d;
+      --bad-soft: #3d1c1a;
+      --off: #4a4f59;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    -webkit-tap-highlight-color: transparent;
+  }
+  main {
+    max-width: 480px;
+    margin: 0 auto;
+    padding: max(20px, env(safe-area-inset-top)) 16px 32px;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 16px;
+  }
+  h1 { font-size: 22px; margin: 0; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 16px;
+    margin-bottom: 12px;
+  }
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    font-weight: 600;
+    padding: 4px 10px;
+    border-radius: 999px;
+    background: var(--line);
+    color: var(--muted);
+  }
+  .pill::before {
+    content: "";
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: currentColor;
+  }
+  .pill.ok { background: var(--accent-soft); color: var(--accent); }
+  .pill.warn { background: var(--warn-soft); color: var(--warn); }
+  .pill.bad { background: var(--bad-soft); color: var(--bad); }
+
+  .state { font-size: 28px; font-weight: 700; margin: 2px 0 10px; }
+  .label { font-size: 13px; color: var(--muted); }
+  .rows { display: grid; gap: 8px; }
+  .row { display: flex; justify-content: space-between; align-items: center; }
+
+  .toggle {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .toggle:disabled { cursor: not-allowed; opacity: .45; }
+  .toggle .name { font-size: 18px; font-weight: 600; }
+  .toggle .hint { display: block; font-size: 13px; color: var(--muted); min-height: 18px; }
+  .track {
+    flex: none;
+    position: relative;
+    width: 56px; height: 32px;
+    border-radius: 999px;
+    background: var(--off);
+    transition: background .2s;
+  }
+  .track::after {
+    content: "";
+    position: absolute;
+    top: 3px; left: 3px;
+    width: 26px; height: 26px;
+    border-radius: 50%;
+    background: #fff;
+    box-shadow: 0 1px 3px rgba(0,0,0,.25);
+    transition: transform .2s;
+  }
+  .toggle[aria-checked="true"] .track { background: var(--accent); }
+  .toggle[aria-checked="true"] .track::after { transform: translateX(24px); }
+  .toggle.pending .track { animation: pulse 1s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: .5; } }
+
+  form { display: grid; gap: 10px; }
+  label { display: grid; gap: 4px; font-size: 13px; color: var(--muted); }
+  input[type="text"], input[type="password"] {
+    width: 100%;
+    padding: 10px 12px;
+    font: inherit;
+    color: var(--text);
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+  }
+  .check { display: flex; align-items: center; gap: 8px; }
+  button.primary, button.link {
+    font: inherit;
+    border: 0;
+    cursor: pointer;
+  }
+  button.primary {
+    padding: 11px;
+    border-radius: 10px;
+    background: var(--accent);
+    color: #fff;
+    font-weight: 600;
+  }
+  button.link { background: none; color: var(--muted); font-size: 13px; padding: 4px 0; }
+  .error { color: var(--bad); font-size: 13px; min-height: 18px; margin: 0; }
+  .muted { color: var(--muted); font-size: 13px; }
+  [hidden] { display: none !important; }
+
+  /* Energy */
+  .card-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+  .card-head h2 { font-size: 18px; margin: 0; }
+  .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px; }
+  .stat .value { font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .seg { display: inline-flex; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 2px; }
+  .seg button {
+    font: inherit; font-size: 13px; border: 0; background: none; color: var(--muted);
+    padding: 4px 10px; border-radius: 6px; cursor: pointer;
+  }
+  .seg button[aria-pressed="true"] { background: var(--card); color: var(--text); font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,.12); }
+  .chart { position: relative; }
+  .chart svg { display: block; width: 100%; height: 180px; overflow: visible; }
+  .chart .grid { stroke: var(--line); stroke-width: 1; }
+  .chart .axis { fill: var(--muted); font-size: 11px; }
+  .chart .bar { fill: var(--accent); }
+  .chart .bar.partial { fill: var(--accent); fill-opacity: .4; }
+  .chart .hit { fill: transparent; cursor: pointer; }
+  .chart .line { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+  .chart .area { fill: var(--accent); fill-opacity: .12; stroke: none; }
+  .chart .cross { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; }
+  .chart .dot { fill: var(--accent); stroke: var(--card); stroke-width: 2; }
+  .chart .hit:hover + .bar, .chart .bar.active { fill-opacity: .75; }
+  .tip {
+    position: absolute; pointer-events: none; transform: translate(-50%, -100%);
+    background: var(--text); color: var(--card); font-size: 12px; line-height: 1.3;
+    padding: 6px 8px; border-radius: 6px; white-space: nowrap;
+  }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; margin-top: 12px; }
+  th, td { text-align: left; padding: 6px 0; border-top: 1px solid var(--line); }
+  th { font-size: 12px; color: var(--muted); font-weight: 600; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  details summary { cursor: pointer; font-size: 13px; color: var(--muted); margin-top: 12px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Twike Charger</h1>
+    <span id="device" class="pill">Disconnected</span>
+  </header>
+
+  <section id="login" class="card">
+    <form id="login-form">
+      <label>Broker host
+        <input id="host" type="text" placeholder="v1f66909.ala.eu-central-1.emqxsl.com"
+               autocapitalize="off" autocorrect="off" spellcheck="false" required>
+      </label>
+      <label>Username
+        <input id="user" type="text" autocomplete="username"
+               autocapitalize="off" autocorrect="off" spellcheck="false" required>
+      </label>
+      <label>Password
+        <input id="pass" type="password" autocomplete="current-password" required>
+      </label>
+      <label class="check"><input id="remember" type="checkbox"> Remember on this device</label>
+      <button class="primary" type="submit">Connect</button>
+      <p id="login-error" class="error"></p>
+    </form>
+  </section>
+
+  <section id="panel" hidden>
+    <div class="card">
+      <div class="label">Charger state</div>
+      <div id="charger-state" class="state">–</div>
+      <div class="rows">
+        <div class="row"><span class="muted">Twike plugged in</span><span id="plugged" class="pill">–</span></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <button id="charging" class="toggle" role="switch" aria-checked="false" disabled>
+        <span><span class="name">Charging</span><span class="hint"></span></span>
+        <span class="track"></span>
+      </button>
+    </div>
+
+    <div class="card">
+      <button id="heating" class="toggle" role="switch" aria-checked="false" disabled>
+        <span><span class="name">Heating</span><span class="hint"></span></span>
+        <span class="track"></span>
+      </button>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2>Power</h2>
+        <div class="seg" role="group" aria-label="Power range">
+          <button id="range-3h" type="button" aria-pressed="true">3 h</button>
+          <button id="range-24h" type="button" aria-pressed="false">24 h</button>
+        </div>
+      </div>
+      <div class="stats">
+        <div class="stat"><div class="label">Power now</div><div id="power" class="value">–</div></div>
+        <div class="stat"><div class="label">Current</div><div id="current" class="value">–</div></div>
+      </div>
+      <div class="label" id="power-title">Current, last 3 hours</div>
+      <div class="chart" id="power-chart">
+        <svg id="power-svg" role="img" aria-labelledby="power-title"></svg>
+        <div id="power-tip" class="tip" hidden></div>
+      </div>
+      <p id="power-empty" class="muted" hidden>No power data yet.</p>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2>Energy</h2>
+        <div class="seg" role="group" aria-label="Energy period">
+          <button id="view-days" type="button" aria-pressed="true">Days</button>
+          <button id="view-months" type="button" aria-pressed="false">Months</button>
+        </div>
+      </div>
+      <div class="stats">
+        <div class="stat"><div class="label">Today so far</div><div id="energy-today" class="value">–</div></div>
+        <div class="stat"><div class="label">This month so far</div><div id="energy-month" class="value">–</div></div>
+      </div>
+      <div class="label" id="chart-title">Last 30 days</div>
+      <div class="chart" id="chart">
+        <svg id="chart-svg" role="img" aria-labelledby="chart-title"></svg>
+        <div id="tip" class="tip" hidden></div>
+      </div>
+      <p id="chart-empty" class="muted" hidden>No finished days yet. The first value appears after midnight.</p>
+      <details>
+        <summary>Show as table</summary>
+        <table>
+          <thead><tr><th id="table-period">Day</th><th class="num">Energy</th></tr></thead>
+          <tbody id="energy-table"></tbody>
+        </table>
+      </details>
+    </div>
+
+    <div class="card rows">
+      <div class="row"><span class="muted">IP address</span><span id="ip">–</span></div>
+      <div class="row"><span class="muted">Uptime</span><span id="uptime">–</span></div>
+      <div class="row"><span class="muted">Broker</span><span id="broker-state">–</span></div>
+    </div>
+
+    <button id="logout" class="link" type="button">Disconnect</button>
+  </section>
+</main>
+
+<script>
+(() => {
+  const PREFIX = "twike-charger";
+  const T = {
+    status: `${PREFIX}/status`,
+    plugged: `${PREFIX}/binary_sensor/twike_plugged_in/state`,
+    chargerState: `${PREFIX}/text_sensor/charger_state/state`,
+    ip: `${PREFIX}/text_sensor/ip_address/state`,
+    uptime: `${PREFIX}/sensor/uptime/state`,
+    chargingState: `${PREFIX}/switch/charging/state`,
+    chargingCmd: `${PREFIX}/switch/charging/command`,
+    heatingState: `${PREFIX}/switch/heating/state`,
+    heatingCmd: `${PREFIX}/switch/heating/command`,
+    power: `${PREFIX}/sensor/power/state`,
+    current: `${PREFIX}/sensor/current/state`,
+    currentHistory: `${PREFIX}/energy/current_history`,
+    energyToday: `${PREFIX}/sensor/energy_today/state`,
+    dayPrefix: `${PREFIX}/energy/day/`,
+  };
+  const DEFAULT_HOST = "v1f66909.ala.eu-central-1.emqxsl.com";
+  const STORE_KEY = "twike-charger-login";
+  // How long to wait for the ESP to confirm a command. A refused command (not
+  // plugged in, or inside the ESP's command-arm window) never sends a new state.
+  const PENDING_TIMEOUT_MS = 8000;
+
+  const $ = (id) => document.getElementById(id);
+  const state = { online: false, plugged: null, charging: null, heating: null };
+  let client = null;
+
+  // --- Saved login (per-device convenience only) ---
+  function loadLogin() {
+    try { return JSON.parse(localStorage.getItem(STORE_KEY)) || null; } catch { return null; }
+  }
+  function saveLogin(login) {
+    try { localStorage.setItem(STORE_KEY, JSON.stringify(login)); } catch {}
+  }
+  function clearLogin() {
+    try { localStorage.removeItem(STORE_KEY); } catch {}
+  }
+
+  // --- Rendering ---
+  function setPill(el, text, kind) {
+    el.textContent = text;
+    el.className = "pill" + (kind ? " " + kind : "");
+  }
+
+  function formatUptime(seconds) {
+    const s = Math.floor(Number(seconds));
+    if (!Number.isFinite(s)) return "–";
+    const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
+    return d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : `${m}m`;
+  }
+
+  function renderDevice() {
+    if (!client || !client.connected) return setPill($("device"), "Disconnected", "");
+    setPill($("device"), state.online ? "Online" : "Offline", state.online ? "ok" : "bad");
+  }
+
+  function renderToggle(id) {
+    const el = $(id);
+    const on = state[id] === true;
+    el.setAttribute("aria-checked", String(on));
+    const hint = el.querySelector(".hint");
+    const canTurnOn = state.online && state.plugged === true;
+    // OFF is always allowed while the device is online; ON only when plugged in
+    el.disabled = !state.online || (!on && !canTurnOn);
+    if (el.classList.contains("pending")) return;
+    if (!state.online) hint.textContent = "Device offline";
+    else if (!on && state.plugged !== true) hint.textContent = "Plug in the Twike first";
+    else hint.textContent = on ? "On" : "Off";
+  }
+
+  function renderAll() {
+    renderDevice();
+    renderToggle("charging");
+    renderToggle("heating");
+  }
+
+  // --- Commands ---
+  const pendingTimers = {};
+
+  function clearPending(id) {
+    clearTimeout(pendingTimers[id]);
+    $(id).classList.remove("pending");
+  }
+
+  function send(id, cmdTopic) {
+    if (!client || !client.connected) return;
+    const want = state[id] === true ? "OFF" : "ON";
+    const el = $(id);
+    el.classList.add("pending");
+    el.querySelector(".hint").textContent = want === "ON" ? "Turning on…" : "Turning off…";
+    // Never retain commands: a retained ON would replay after an ESP reboot
+    client.publish(cmdTopic, want, { qos: 1, retain: false });
+    clearTimeout(pendingTimers[id]);
+    pendingTimers[id] = setTimeout(() => {
+      clearPending(id);
+      renderToggle(id);
+      const reached = (state[id] === true) === (want === "ON");
+      if (!reached) el.querySelector(".hint").textContent = "No change — check the ESP log";
+    }, PENDING_TIMEOUT_MS);
+  }
+
+  $("charging").addEventListener("click", () => send("charging", T.chargingCmd));
+  $("heating").addEventListener("click", () => send("heating", T.heatingCmd));
+
+  // --- Energy ---
+  const energy = { days: {}, today: null, view: "days" };
+  const DAYS_SHOWN = 30;
+  const MONTHS_SHOWN = 12;
+  const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+  function formatWh(wh) {
+    if (wh == null || !Number.isFinite(wh)) return "–";
+    return Math.abs(wh) < 1000 ? `${Math.round(wh)} Wh` : `${(wh / 1000).toFixed(2)} kWh`;
+  }
+  const axisLabel = (wh) => wh === 0 ? "0" : wh < 1000 ? `${wh} Wh` : `${+(wh / 1000).toFixed(1)} kWh`;
+  const pad = (n) => String(n).padStart(2, "0");
+  const dayKey = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  const monthKey = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}`;
+  const parseDay = (key) => { const [y, m, d] = key.split("-").map(Number); return new Date(y, m - 1, d); };
+
+  // Finished days from the broker plus today's live value
+  function allDays() {
+    const days = { ...energy.days };
+    if (energy.today != null) days[dayKey(new Date())] = energy.today;
+    return days;
+  }
+
+  function series() {
+    const days = allDays();
+    const todayKey = dayKey(new Date());
+    const out = [];
+    if (energy.view === "days") {
+      for (let i = DAYS_SHOWN - 1; i >= 0; i--) {
+        const d = new Date(); d.setHours(12, 0, 0, 0); d.setDate(d.getDate() - i);
+        const key = dayKey(d);
+        out.push({
+          key, value: days[key] ?? null, partial: key === todayKey,
+          label: `${d.getDate()}.${d.getMonth() + 1}.`,
+          long: d.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" }),
+          tick: d.getDay() === 1 ? `${d.getDate()}.${d.getMonth() + 1}.` : "",
+        });
+      }
+    } else {
+      const sums = {};
+      for (const [key, wh] of Object.entries(days)) {
+        const mk = key.slice(0, 7);
+        sums[mk] = (sums[mk] || 0) + wh;
+      }
+      const thisMonth = monthKey(new Date());
+      for (let i = MONTHS_SHOWN - 1; i >= 0; i--) {
+        const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - i);
+        const key = monthKey(d);
+        out.push({
+          key, value: sums[key] ?? null, partial: key === thisMonth,
+          label: MONTH_NAMES[d.getMonth()],
+          long: d.toLocaleDateString(undefined, { month: "long", year: "numeric" }),
+          tick: i % 2 === 0 ? MONTH_NAMES[d.getMonth()] : "",
+        });
+      }
+    }
+    return out;
+  }
+
+  // Round the axis max up to 1/2/5 x 10^n so gridlines land on clean values
+  function niceMax(v) {
+    if (v <= 0) return 1000;
+    const p = Math.pow(10, Math.floor(Math.log10(v)));
+    for (const m of [1, 2, 5, 10]) if (v <= m * p) return m * p;
+    return 10 * p;
+  }
+
+  function renderEnergy() {
+    const data = series();
+    const svg = $("chart-svg");
+    const hasData = data.some((d) => d.value != null);
+    $("chart-title").textContent = energy.view === "days" ? `Last ${DAYS_SHOWN} days` : `Last ${MONTHS_SHOWN} months`;
+    $("chart-empty").hidden = Object.keys(energy.days).length > 0 || energy.today != null;
+    const thisMonth = monthKey(new Date());
+    const monthWh = Object.entries(allDays()).filter(([k]) => k.startsWith(thisMonth)).reduce((sum, [, v]) => sum + v, 0);
+    $("energy-month").textContent = energy.today != null || monthWh ? formatWh(monthWh) : "–";
+
+    const W = svg.clientWidth || 440, H = 180;
+    const left = 48, bottom = 20, top = 8;
+    const plotW = W - left, plotH = H - bottom - top;
+    const max = niceMax(Math.max(0, ...data.map((d) => d.value || 0)));
+    const slot = plotW / data.length;
+    const barW = Math.max(2, slot - 2);  // 2px gap between bars
+    const y = (v) => top + plotH - (v / max) * plotH;
+
+    let html = "";
+    for (let i = 0; i <= 2; i++) {
+      const v = (max / 2) * i, gy = y(v);
+      html += `<line class="grid" x1="${left}" x2="${W}" y1="${gy}" y2="${gy}"/>`;
+      html += `<text class="axis" x="${left - 6}" y="${gy + 4}" text-anchor="end">${axisLabel(v)}</text>`;
+    }
+    data.forEach((d, i) => {
+      const x = left + i * slot + 1;
+      if (d.tick) html += `<text class="axis" x="${x + barW / 2}" y="${H - 4}" text-anchor="middle">${d.tick}</text>`;
+      html += `<rect class="hit" data-i="${i}" x="${x - 1}" y="${top}" width="${slot}" height="${plotH}"/>`;
+      if (d.value != null && d.value > 0) {
+        const h = Math.max(1, (d.value / max) * plotH), by = top + plotH - h, r = Math.min(4, barW / 2, h);
+        // Rounded top, square base on the axis
+        html += `<path class="bar${d.partial ? " partial" : ""}" data-i="${i}" d="M${x},${by + h}V${by + r}q0,-${r} ${r},-${r}h${barW - 2 * r}q${r},0 ${r},${r}V${by + h}Z"/>`;
+      }
+    });
+    svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    svg.innerHTML = html;
+    svg.style.visibility = hasData ? "visible" : "hidden";
+
+    // Table: newest first, only periods with data
+    $("table-period").textContent = energy.view === "days" ? "Day" : "Month";
+    const rows = energy.view === "days"
+      ? Object.entries(allDays()).sort((a, b) => b[0].localeCompare(a[0])).map(([k, v]) => [
+          parseDay(k).toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short", year: "numeric" }) + (k === dayKey(new Date()) ? " (so far)" : ""), v])
+      : monthRows();
+    $("energy-table").innerHTML = rows.length
+      ? rows.map(([label, v]) => `<tr><td>${label}</td><td class="num">${formatWh(v)}</td></tr>`).join("")
+      : `<tr><td colspan="2" class="muted">No data yet</td></tr>`;
+  }
+
+  function monthRows() {
+    const sums = {};
+    for (const [key, wh] of Object.entries(allDays())) sums[key.slice(0, 7)] = (sums[key.slice(0, 7)] || 0) + wh;
+    const thisMonth = monthKey(new Date());
+    return Object.entries(sums).sort((a, b) => b[0].localeCompare(a[0])).map(([k, v]) => {
+      const [yy, mm] = k.split("-").map(Number);
+      return [new Date(yy, mm - 1, 1).toLocaleDateString(undefined, { month: "long", year: "numeric" }) + (k === thisMonth ? " (so far)" : ""), v];
+    });
+  }
+
+  // Tooltip: hover on desktop, tap on touch
+  function showTip(e) {
+    const i = e.target.dataset && e.target.dataset.i;
+    if (i == null) return hideTip();
+    const d = series()[Number(i)];
+    const tip = $("tip"), box = $("chart").getBoundingClientRect(), r = e.target.getBoundingClientRect();
+    tip.innerHTML = `<strong>${formatWh(d.value)}</strong>${d.partial ? " so far" : ""}<br>${d.long}`;
+    tip.hidden = false;
+    const x = Math.min(Math.max(r.left + r.width / 2 - box.left, 50), box.width - 50);
+    tip.style.left = `${x}px`;
+    tip.style.top = `${Math.max(0, r.top - box.top) - 6}px`;
+    document.querySelectorAll(".chart .bar.active").forEach((b) => b.classList.remove("active"));
+    const bar = $("chart-svg").querySelector(`.bar[data-i="${i}"]`);
+    if (bar) bar.classList.add("active");
+  }
+  function hideTip() {
+    $("tip").hidden = true;
+    document.querySelectorAll(".chart .bar.active").forEach((b) => b.classList.remove("active"));
+  }
+  $("chart-svg").addEventListener("pointermove", showTip);
+  $("chart-svg").addEventListener("pointerdown", showTip);
+  $("chart-svg").addEventListener("pointerleave", hideTip);
+
+  function setView(view) {
+    energy.view = view;
+    $("view-days").setAttribute("aria-pressed", String(view === "days"));
+    $("view-months").setAttribute("aria-pressed", String(view === "months"));
+    hideTip();
+    renderEnergy();
+  }
+  $("view-days").addEventListener("click", () => setView("days"));
+  $("view-months").addEventListener("click", () => setView("months"));
+  window.addEventListener("resize", () => renderEnergy());
+
+  // --- Current (line chart) ---
+  // history: 5 min averages from the ESP (retained); live: readings received while the page is open
+  const power = { history: null, live: [], range: 3 };
+  const fmtW = (w) => w == null || !Number.isFinite(w) ? "–" : Math.abs(w) < 1000 ? `${Math.round(w)} W` : `${(w / 1000).toFixed(2)} kW`;
+  const fmtA = (a) => a == null || !Number.isFinite(a) ? "–" : `${a.toFixed(2)} A`;
+  const axisA = (a) => a === 0 ? "0" : `${+a.toFixed(2)} A`;
+  const fmtTime = (ms) => new Date(ms).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+
+  function powerPoints() {
+    const pts = [];
+    let histEnd = 0;
+    if (power.history) {
+      const { end, step, v: vals } = power.history;
+      histEnd = end * 1000;
+      vals.forEach((v, i) => {
+        const start = (end - (vals.length - i) * step) * 1000;
+        pts.push({ t: start + step * 500, w: v, from: start, to: start + step * 1000 });
+      });
+    }
+    for (const p of power.live) if (p.t > histEnd) pts.push({ t: p.t, w: p.w, live: true });
+    return pts;
+  }
+
+  function renderPower() {
+    const svg = $("power-svg");
+    const now = Date.now(), tmin = now - power.range * 3600 * 1000;
+    const pts = powerPoints().filter((p) => p.t >= tmin);
+    const valid = pts.filter((p) => p.w != null && Number.isFinite(p.w));
+    $("power-title").textContent = power.range === 3 ? "Current, last 3 hours" : "Current, last 24 hours";
+    $("power-empty").hidden = valid.length > 0;
+    svg.style.visibility = valid.length ? "visible" : "hidden";
+
+    const W = svg.clientWidth || 440, H = 180;
+    const left = 48, bottom = 20, top = 8, right = 4;
+    const plotW = W - left - right, plotH = H - bottom - top;
+    const peak = Math.max(0, ...valid.map((p) => p.w));
+    const max = peak > 0 ? niceMax(peak) : 1;
+    const x = (t) => left + ((t - tmin) / (now - tmin)) * plotW;
+    const y = (v) => top + plotH - (Math.max(0, v) / max) * plotH;
+
+    let html = "";
+    for (let i = 0; i <= 2; i++) {
+      const v = (max / 2) * i, gy = y(v);
+      html += `<line class="grid" x1="${left}" x2="${W - right}" y1="${gy}" y2="${gy}"/>`;
+      html += `<text class="axis" x="${left - 6}" y="${gy + 4}" text-anchor="end">${axisA(v)}</text>`;
+    }
+    // Hour ticks: every hour (3 h) or every 6 hours (24 h)
+    const every = power.range === 3 ? 1 : 6;
+    const tick = new Date(tmin); tick.setMinutes(0, 0, 0);
+    for (tick.setHours(tick.getHours() + 1); tick.getTime() <= now; tick.setHours(tick.getHours() + 1)) {
+      if (tick.getHours() % every) continue;
+      html += `<text class="axis" x="${x(tick.getTime())}" y="${H - 4}" text-anchor="middle">${fmtTime(tick.getTime())}</text>`;
+    }
+
+    // Break the line at missing values and at gaps longer than ~2 slots
+    const segments = [];
+    let seg = [];
+    pts.forEach((p, i) => {
+      const gap = i > 0 && p.t - pts[i - 1].t > 11 * 60 * 1000;
+      if (p.w == null || !Number.isFinite(p.w) || gap) { if (seg.length) segments.push(seg); seg = []; }
+      if (p.w != null && Number.isFinite(p.w)) seg.push(p);
+    });
+    if (seg.length) segments.push(seg);
+    for (const sg of segments) {
+      const line = sg.map((p, i) => `${i ? "L" : "M"}${x(p.t).toFixed(1)},${y(p.w).toFixed(1)}`).join("");
+      const base = y(0).toFixed(1);
+      html += `<path class="area" d="${line}L${x(sg[sg.length - 1].t).toFixed(1)},${base}L${x(sg[0].t).toFixed(1)},${base}Z"/>`;
+      html += `<path class="line" d="${sg.length === 1 ? line + "h0.1" : line}"/>`;
+    }
+    html += `<line id="power-cross" class="cross" y1="${top}" y2="${top + plotH}" visibility="hidden"/>`;
+    html += `<circle id="power-dot" class="dot" r="4" visibility="hidden"/>`;
+    svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    svg.innerHTML = html;
+    power.geom = { valid, x, y, left, right: W - right };
+  }
+
+  // Crosshair + tooltip on the nearest reading
+  function showPowerTip(e) {
+    const g = power.geom;
+    if (!g || !g.valid.length) return;
+    const box = $("power-svg").getBoundingClientRect();
+    const scale = box.width / ($("power-svg").viewBox.baseVal.width || box.width);
+    const px = (e.clientX - box.left) / scale;
+    if (px < g.left - 8 || px > g.right + 8) return hidePowerTip();
+    let best = g.valid[0];
+    for (const p of g.valid) if (Math.abs(g.x(p.t) - px) < Math.abs(g.x(best.t) - px)) best = p;
+    const cx = g.x(best.t), cy = g.y(best.w);
+    const cross = $("power-cross"), dot = $("power-dot");
+    cross.setAttribute("x1", cx); cross.setAttribute("x2", cx); cross.setAttribute("visibility", "visible");
+    dot.setAttribute("cx", cx); dot.setAttribute("cy", cy); dot.setAttribute("visibility", "visible");
+    const tip = $("power-tip");
+    tip.innerHTML = best.live
+      ? `<strong>${fmtA(best.w)}</strong><br>${fmtTime(best.t)}`
+      : `<strong>Ø ${fmtA(best.w)}</strong><br>${fmtTime(best.from)}–${fmtTime(best.to)}`;
+    tip.hidden = false;
+    tip.style.left = `${Math.min(Math.max(cx * scale, 50), box.width - 50)}px`;
+    tip.style.top = `${Math.max(0, cy * scale - 10)}px`;
+  }
+  function hidePowerTip() {
+    $("power-tip").hidden = true;
+    const cross = $("power-cross"), dot = $("power-dot");
+    if (cross) cross.setAttribute("visibility", "hidden");
+    if (dot) dot.setAttribute("visibility", "hidden");
+  }
+  $("power-svg").addEventListener("pointermove", showPowerTip);
+  $("power-svg").addEventListener("pointerdown", showPowerTip);
+  $("power-svg").addEventListener("pointerleave", hidePowerTip);
+
+  function setRange(hours) {
+    power.range = hours;
+    $("range-3h").setAttribute("aria-pressed", String(hours === 3));
+    $("range-24h").setAttribute("aria-pressed", String(hours === 24));
+    hidePowerTip();
+    renderPower();
+  }
+  $("range-3h").addEventListener("click", () => setRange(3));
+  $("range-24h").addEventListener("click", () => setRange(24));
+  window.addEventListener("resize", () => renderPower());
+
+  // --- MQTT ---
+  function onMessage(topic, payload) {
+    const msg = payload.toString();
+    if (topic.startsWith(T.dayPrefix)) {
+      const key = topic.slice(T.dayPrefix.length);
+      const wh = parseFloat(msg);
+      if (/^\d{4}-\d{2}-\d{2}$/.test(key)) {
+        if (Number.isFinite(wh)) energy.days[key] = wh; else delete energy.days[key];
+        renderEnergy();
+      }
+      return;
+    }
+    switch (topic) {
+      case T.power: {
+        const w = parseFloat(msg);
+        $("power").textContent = fmtW(Number.isFinite(w) ? w : null);
+        break;
+      }
+      case T.current: {
+        const a = parseFloat(msg);
+        $("current").textContent = fmtA(Number.isFinite(a) ? a : null);
+        if (Number.isFinite(a)) {
+          power.live.push({ t: Date.now(), w: a });
+          const cutoff = Date.now() - 24 * 3600 * 1000;
+          while (power.live.length && power.live[0].t < cutoff) power.live.shift();
+        }
+        renderPower();
+        break;
+      }
+      case T.currentHistory: {
+        try {
+          const h = JSON.parse(msg);
+          if (Number.isFinite(h.end) && Number.isFinite(h.step) && Array.isArray(h.v)) power.history = h;
+        } catch {}
+        renderPower();
+        break;
+      }
+      case T.energyToday: {
+        const wh = parseFloat(msg);
+        energy.today = Number.isFinite(wh) ? wh : null;
+        $("energy-today").textContent = formatWh(energy.today);
+        renderEnergy();
+        break;
+      }
+      case T.status:
+        state.online = msg === "online";
+        break;
+      case T.plugged:
+        state.plugged = msg === "ON";
+        setPill($("plugged"), state.plugged ? "Yes" : "No", state.plugged ? "ok" : "");
+        break;
+      case T.chargerState:
+        $("charger-state").textContent = msg || "–";
+        break;
+      case T.ip:
+        $("ip").textContent = msg || "–";
+        break;
+      case T.uptime:
+        $("uptime").textContent = formatUptime(msg);
+        break;
+      case T.chargingState:
+      case T.heatingState: {
+        const id = topic === T.chargingState ? "charging" : "heating";
+        // Charging reports ON as soon as stage 1 is on, so this arrives quickly
+        state[id] = msg === "ON";
+        clearPending(id);
+        break;
+      }
+    }
+    renderAll();
+  }
+
+  function connect(login) {
+    $("login-error").textContent = "";
+    if (client) client.end(true);
+
+    const url = `wss://${login.host}:8084/mqtt`;
+    const c = mqtt.connect(url, {
+      username: login.user,
+      password: login.pass,
+      clientId: "web-" + Math.random().toString(16).slice(2, 10),
+      clean: true,
+      keepalive: 30,
+      reconnectPeriod: 3000,
+      connectTimeout: 10000,
+    });
+    client = c;
+
+    let everConnected = false;
+
+    c.on("connect", () => {
+      everConnected = true;
+      $("broker-state").textContent = "Connected";
+      $("login").hidden = true;
+      $("panel").hidden = false;
+      renderPower();
+      renderEnergy();
+      c.subscribe(`${PREFIX}/#`, { qos: 1 });
+      renderAll();
+    });
+    c.on("reconnect", () => { $("broker-state").textContent = "Reconnecting…"; renderDevice(); });
+    c.on("offline", () => { $("broker-state").textContent = "Offline"; renderDevice(); });
+    c.on("close", () => renderDevice());
+    c.on("error", (err) => {
+      // Bad credentials etc.: stop retrying and go back to the login form
+      if (!everConnected && client === c) {
+        $("login-error").textContent = "Could not connect: " + (err && err.message || err);
+        c.end(true);
+        showLogin();
+      }
+    });
+    c.on("message", onMessage);
+
+    // A failed TLS/WebSocket handshake doesn't always emit "error"
+    setTimeout(() => {
+      if (!everConnected && client === c && !c.connected) {
+        $("login-error").textContent = "Could not reach the broker. Check the host name.";
+        c.end(true);
+        showLogin();
+      }
+    }, 12000);
+  }
+
+  function showLogin() {
+    $("panel").hidden = true;
+    $("login").hidden = false;
+  }
+
+  $("login-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const login = { host: $("host").value.trim(), user: $("user").value.trim(), pass: $("pass").value };
+    if ($("remember").checked) saveLogin(login); else clearLogin();
+    connect(login);
+  });
+
+  $("logout").addEventListener("click", () => {
+    if (client) client.end(true);
+    client = null;
+    clearLogin();
+    $("pass").value = "";
+    $("remember").checked = false;
+    renderDevice();
+    showLogin();
+  });
+
+  $("host").value = DEFAULT_HOST;
+
+  // Auto-connect with saved login
+  const saved = loadLogin();
+  if (saved) {
+    $("host").value = saved.host || DEFAULT_HOST;
+    $("user").value = saved.user || "";
+    $("pass").value = saved.pass || "";
+    $("remember").checked = true;
+    connect(saved);
+  }
+})();
+</script>
+</body>
+</html>
