@@ -25,7 +25,7 @@ substitutions:
   # stale retained ON on a command topic can't start charging after a reboot
   command_arm_delay: 5s
   # Shelly Pro EM-50 on the LAN (reserve this IP in the router)
-  shelly_host: 192.168.1.161
+  shelly_host: 192.168.1.211
   # Measuring channel the phase is on (0 or 1)
   shelly_channel: "0"
   shelly_poll_interval: 30s
@@ -52,7 +52,8 @@ psram:
 logger:
   hardware_uart: USB_SERIAL_JTAG
 
-# W5500 over SPI, IP via DHCP. Pins from the Waveshare demo code, not yet
+# W5500 over SPI, fixed IP (DHCP doesn't make it through the RUT140 relay +
+# range extender). Pins from the Waveshare demo code, not yet
 # confirmed on hardware: if the link never comes up, check these against the
 # schematic.
 ethernet:
@@ -64,6 +65,11 @@ ethernet:
   interrupt_pin: GPIO12
   reset_pin: GPIO39
   clock_speed: 20MHz
+  manual_ip:
+    static_ip: 192.168.1.210
+    gateway: 192.168.1.1
+    subnet: 255.255.255.0
+    dns1: 192.168.1.1
 
 ota:
   - platform: esphome
@@ -321,7 +327,7 @@ script:
     mode: single
     then:
       - switch.turn_on: charge_relay_1
-      - delay: 5s
+      - delay: 14s
       - if:
           condition:
             binary_sensor.is_on: twike_plugged_in
@@ -336,7 +342,7 @@ script:
     then:
       - script.stop: start_charging
       - switch.turn_off: charge_relay_2
-      - delay: 2s
+      - delay: 10s
       - switch.turn_off: charge_relay_1
 
   # Restarted whenever stage 2 turns on, stopped when it turns off

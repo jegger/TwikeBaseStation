@@ -20,7 +20,7 @@ uvx esphome run twike-charger.yaml --device /dev/cu.usbmodem*
 If the board doesn't show up, hold BOOT while plugging in USB.
 
 Then, with the Ethernet cable plugged in, watch the log for:
-- `ethernet` getting an IP via DHCP (if not: check the W5500 pins)
+- `ethernet` coming up with its fixed IP 192.168.1.210 (if not: check the W5500 pins)
 - `mqtt` connecting over TLS (if TLS fails: check the broker host and the clock)
 
 ## Check the topics
