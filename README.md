@@ -6,4 +6,5 @@ A Shelly Pro EM-50 measures the energy the Twike uses, so I can track the Wh per
 
 - [esphome/](esphome/): firmware for the Waveshare ESP32-S3 board (charger relays, safety logic, power meter, MQTT)
 - [docs/](docs/): static web page to control the charger and view the energy data (GitHub Pages)
+- [network/](network/): network setup (Teltonika RUT140 bridge, all IPs)
 - [src/](src/): first hardware test sketch (PlatformIO)

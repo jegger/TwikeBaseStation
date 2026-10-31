@@ -7,3 +7,6 @@ esphome/secrets.yaml
 
 # macOS
 .DS_Store
+
+# Local notes with passwords
+secrets.txt
